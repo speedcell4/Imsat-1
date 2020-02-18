@@ -15,7 +15,6 @@ import torchvision.transforms as transforms
 from munkres import Munkres
 from sklearn.metrics.cluster import normalized_mutual_info_score
 from torch import optim
-from torch.autograd import Variable
 
 # Settings
 parser = argparse.ArgumentParser()
@@ -115,26 +114,26 @@ if use_cuda:
 
 
 # Loss function and optimizer
-def entropy(p):
+def entropy(p, eps=1e-8):
     # compute entropy
     if (len(p.size())) == 2:
-        return - torch.sum(p * torch.log(p + 1e-8)) / float(len(p))
+        return - torch.sum(p * torch.log(p + eps)) / float(len(p))
     elif (len(p.size())) == 1:
-        return - torch.sum(p * torch.log(p + 1e-8))
+        return - torch.sum(p * torch.log(p + eps))
     else:
         raise NotImplementedError
 
 
-def Compute_entropy(net, x):
+def compute_entropy(net, x):
     # compute the entropy and the conditional entropy
     p = F.softmax(net(x), dim=1)
     p_ave = torch.sum(p, dim=0) / len(x)
     return entropy(p), entropy(p_ave)
 
 
-def kl(p, q):
+def kl(p, q, eps=1e-8):
     # compute KL divergence between p and q
-    return torch.sum(p * torch.log((p + 1e-8) / (q + 1e-8))) / float(len(p))
+    return torch.sum(p * torch.log((p + eps) / (q + eps))) / float(len(p))
 
 
 def distance(y0, y1):
@@ -146,11 +145,11 @@ def vat(network, distance, x, eps_list, xi=10, Ip=1):
     # compute the regularized penality [eq. (4) & eq. (6), 1]
 
     with torch.no_grad():
-        y = network(Variable(x))
+        y = network(x)
     d = torch.randn((x.size()[0], x.size()[1]))
     d = F.normalize(d, p=2, dim=1)
     for ip in range(Ip):
-        d_var = Variable(d)
+        d_var = d
         if use_cuda:
             d_var = d_var.to(device)
         d_var.requires_grad_(True)
@@ -175,14 +174,12 @@ def enc_aux_noubs(x):
 
 def loss_unlabeled(x, eps_list):
     # to use enc_aux_noubs
-    L = vat(enc_aux_noubs, distance, x, eps_list)
-    return L
+    return vat(enc_aux_noubs, distance, x, eps_list)
 
 
 def upload_nearest_dist(dataset):
     # Import the range of local perturbation for VAT
-    nearest_dist = np.loadtxt(dataset + '/' + '10th_neighbor.txt').astype(np.float32)
-    return nearest_dist
+    return np.loadtxt(dataset + '/' + '10th_neighbor.txt').astype(np.float32)
 
 
 optimizer = optim.Adam(net.parameters(), lr=lr)
@@ -221,13 +218,14 @@ for epoch in range(n_epoch):
         inputs, labels, ind = data
         inputs = inputs.view(-1, 28 * 28)
         if use_cuda:
-            inputs, labels, nearest_dist, ind = inputs.to(device), labels.to(device), nearest_dist.to(device), ind.to(
-                device)
+            inputs, labels, nearest_dist, ind = \
+                inputs.to(device), labels.to(device), \
+                nearest_dist.to(device), ind.to(device)
 
         # forward
-        aver_entropy, entropy_aver = Compute_entropy(net, Variable(inputs))
+        aver_entropy, entropy_aver = compute_entropy(net, inputs)
         r_mutual_i = aver_entropy - args.mu * entropy_aver
-        loss_ul = loss_unlabeled(Variable(inputs), nearest_dist[ind])
+        loss_ul = loss_unlabeled(inputs, nearest_dist[ind])
 
         loss = loss_ul + args.lam * r_mutual_i
 
